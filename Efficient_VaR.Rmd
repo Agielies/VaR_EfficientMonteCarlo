@@ -1,0 +1,244 @@
+---
+title: "Project - VaR"
+author: "AM Meyer 18450547"
+date: "07/04/2021"
+output: word_document
+---
+
+# Loading data
+```{r}
+
+library(readxl)
+library(MASS)
+
+Cov <- read_excel("/DataVaR.xlsx", 
+    sheet = "Covariance")
+
+Cov1 <- read_excel("/DataVaR.xlsx", 
+    sheet = "Cov1")
+
+
+Portdata <- read_excel("/DataVaR.xlsx", sheet = "Portfolio")
+```
+
+
+
+# Basic Monte Carlo
+```{r}
+Chol <- t(chol(Cov)) # finding the lower triangular choleski decompoistion of the covariance matrix of the underlying assets.
+
+mu <- c(0,0,0)
+sigma <- matrix(rep(0,9),nrow =3,ncol=3) 
+n <- 10000 # number of simulations
+
+for (i in 1:3)   # gettting a identity matrix to use sa the standard normal covariance matrix
+{sigma[i,i] <- 1}
+
+means <- as.double(unlist(Portdata[6,2:4]))
+
+set.seed(2)
+
+normsamp <- mvrnorm(n,mu,sigma) # sample of n changes in the risk factors i.e z ~ N(0,Es)
+
+pc <- matrix(nrow = n, ncol =3) # defining matrix with the changes in assets
+
+for (i in 1:n) # matrix multiplication to find changes in assets.
+{
+pc[i,] <- as.matrix(means) +  Chol  %*% as.matrix(normsamp[i,]) 
+}
+
+
+prices <- Portdata[1,2:4] # spot prices of the assets
+
+dS <- matrix(nrow = n, ncol = 3)
+
+for (i in 1:n)
+dS[i,] <- t(pc[i,] * prices) # nominal change in assets
+
+
+
+```
+
+
+
+# Changes in portfolio
+
+```{r}
+weights <- Portdata[2,] # number of shares
+delta <- Portdata[3,5:7] # delta of options
+
+tdelta <- weights[2:4] + delta # total delta per underlying asset
+
+gamma <- Portdata[4,5:7] # gamma of options
+
+
+
+dVd <- t(as.matrix(tdelta) %*% t(dS)) # change in portfolio due to delta calc
+
+
+dVg <- matrix(nrow = n,ncol = 1) # change in portfolio due to gamma calc
+
+for (i in 1:n)
+{
+  dVg[i,] <- 0.5*(t(as.matrix(dS[i,])) %*% diag(gamma) %*% as.matrix(dS[i,]))
+}           
+
+Loss <- -dVd - dVg # total loss in portfolio
+
+hist(Loss)
+quantile(sort(Loss),0.95)
+
+portvalue <- as.double(unlist(Portdata[7,2])) # portfolio value at original time
+
+sortedLoss <- sort(Loss)
+
+VaR <- function(alpha) # calculates the VaR and the percentage VaR
+  {
+  
+
+  number <- as.integer(alpha * n)
+  quantile <- sortedLoss[number]
+  perchange <- quantile /portvalue 
+  
+  return(quantile)
+}
+```
+
+
+# Monte Carlo using importance sampling
+```{r}
+
+Sigma <- cov(dS)  # covariance matrix of simulated changes
+
+
+
+A <- t(chol(Sigma)) # lower triangular matrix from Choleksi decomposition
+
+
+
+Gamma <- diag(gamma) # gamma matrix
+
+Lambda <- -0.5 * t(A) * Gamma * A # similar results as for eigen
+
+
+b <- -as.matrix(tdelta) %*% A # delta times C
+
+
+dVd1 <- t(as.matrix(b) %*% t(normsamp))
+
+
+dVg1 <- matrix(nrow = n,ncol =1) 
+ for (i in 1:n)
+{
+  dVg1[i,] <- (t(as.matrix(normsamp[i,])) %*% Lambda %*% as.matrix(normsamp[i,]))
+}           
+
+#for (i in 1:n)
+#dSis[i,] <- t(dSis1[i,] * prices) 
+
+
+Loss1 <-  +dVd1 +dVg1
+
+mean(Loss)
+mean(Loss1)
+
+x1 <-  as.double(quantile(sort(Loss1,decreasing = FALSE),0.95))
+
+
+lamda <- diag(Lambda)
+
+ftheta <- function(theta)
+{
+  y <- 0
+  for (i in 1:3)
+  {
+    
+    y <- y + (theta*(b[i]^2)*(1-theta*lamda[i]))/((1-2*theta*lamda[i])^2) + lamda[i]/(1-2*theta*lamda[i])
+  }
+  return(y-x1)
+}
+
+
+theta <- 0.0000016322628574812
+
+theta <- 1.16926532724955E-06
+as1 <- ftheta(theta)
+
+
+
+ # value calcualted using excel solver
+
+sigtheta <- matrix(data = rep(0,9),nrow = 3,ncol = 3)
+
+for (i in 1:3) # sigma from IS (Importance sampling)
+  {
+sigtheta[i,i] <- (1-2*theta*Lambda[i,i])^(-1) 
+}
+
+meantheta <- theta*sigtheta %*% t(b) # mean vector from IS
+
+
+set.seed(2)
+
+
+Z <- mvrnorm(n,meantheta,sigtheta) # random observation simulated from IS
+
+
+dSis <- matrix(nrow = n, ncol = 3) # changes in underlying assets from IS
+dSis1 <- matrix(nrow = n, ncol = 3)
+for (i in 1:n)
+{
+dSis1[i,] <- t(C %*% as.matrix(Z[i,]))
+}
+for (i in 1:n)
+dSis[i,] <- t(dSis1[i,] * prices) 
+
+
+
+dVdis <- t(as.matrix(tdelta) %*% t(dSis)) # change in portfolio due to delta calc
+
+
+dVgis <- matrix(nrow = n,ncol = 1) # change in portfolio due to gamma calc
+
+for (i in 1:n)
+{
+  dVgis[i,] <- 0.5*(t(as.matrix(dSis[i,])) %*% diag(gamma) %*% as.matrix(dSis[i,]))
+}           
+
+Q <- dVdis +dVgis # total loss, since we use L approx = Q
+
+plot(sort(Q))
+VaR <- as.double(quantile(sort(Q),0.05))
+sum(Q <= VaR)
+
+phi <- 0 # intialising value of charaterics function value when using theta as input
+for (i in 1:3) # calc of phi
+{
+  y <-0.5 *(((theta*b[i])^2)/(1-2*theta*Lambda[i,i] - log(1-2*theta*Lambda[i,i])))
+  phi <- phi + y
+}
+
+
+
+
+re <- 0 # return estimate
+for (i in 1:n)
+{
+  
+y<- exp(theta*Q[i] + phi)*as.integer(Q[i] > x1)
+
+re <- re + y
+}
+
+re/n # this value should be 0.05 so I made a mistake somewhere and will try to find it.
+ 
+
+var(Loss)/var(Q)
+
+mean(Q)
+ 
+  
+```
+
+
+
